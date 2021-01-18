@@ -12,6 +12,12 @@ raise "This script requires Ruby version 3 or later." unless RUBY_VERSION.split(
 # An instance of this parser class is created for each ractor.
 class RactorParser
 
+  attr_reader :dictionary_words
+
+  def initialize(dictionary_words)
+    @dictionary_words = dictionary_words
+  end
+
   def parse(filespecs)
     filespecs.inject(Set.new) do |found_words, filespec|
       found_words | process_one_file(filespec)
@@ -19,8 +25,7 @@ class RactorParser
   end
 
   private def word?(string)
-    @words ||= File.readlines('/usr/share/dict/words').map(&:chomp).map(&:downcase).sort
-    @words.include?(string)
+    dictionary_words.include?(string)
   end
 
   private def strip_punctuation(string)
@@ -44,7 +49,7 @@ class RactorParser
       line_words(line).each { |word| file_words << word }
     end
 
-    puts "Found #{file_words.count} words in #{filespec}."
+    # puts "Found #{file_words.count} words in #{filespec}."
     file_words
   end
 end
@@ -82,18 +87,23 @@ class Main
   private def get_filespec_slices
     all_filespecs = find_all_filespecs
     slice_size = (all_filespecs.size / CPU_COUNT) + 1
+    # slice_size = all_filespecs.size # use this line instead of previous to test with 1 ractor
     slices = all_filespecs.each_slice(slice_size).to_a
     puts "Processing #{all_filespecs.size} files in #{slices.size} slices, whose sizes are:\n#{slices.map(&:size).inspect}"
     slices
   end
 
   private def create_and_populate_ractors(slices)
+    words = File.readlines('/usr/share/dict/words').map(&:chomp).map(&:downcase).sort
+
     slices.map do |slice|
       ractor = Ractor.new do
         filespecs = Ractor.receive
-        RactorParser.new.parse(filespecs)
+        dictionary_words = Ractor.receive
+        RactorParser.new(dictionary_words).parse(filespecs)
       end
       ractor.send(slice)
+      ractor.send(words)
       ractor
     end
   end
