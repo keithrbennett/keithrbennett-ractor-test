@@ -65,8 +65,15 @@ class Main
 
   private def ractor_count
     unless @ractor_count
-      @ractor_count = ENV['RACTOR_COUNT'] ? ENV['RACTOR_COUNT'].to_i : Etc.nprocessors
+      specified_as_env_var = !!ENV['RACTOR_COUNT']
+      @ractor_count = specified_as_env_var ? ENV['RACTOR_COUNT'].to_i : Etc.nprocessors
+
       raise "Ractor count must > 0." unless @ractor_count > 0
+
+      unless specified_as_env_var
+        puts "Using the number of CPU's (#{@ractor_count}) as the number of ractors."
+        puts "You can also optionally specify the number of ractors to use with the environment variable RACTOR_COUNT."
+      end
     end
     @ractor_count
   end
