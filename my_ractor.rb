@@ -3,6 +3,7 @@
 require 'amazing_print'
 require 'benchmark'
 require 'etc'
+require 'prettyprint'
 require 'set'
 require 'shellwords'
 require 'yaml'
@@ -11,7 +12,7 @@ raise "This script requires Ruby version 3 or later." unless RUBY_VERSION.split(
 
 
 # An instance of this parser class is created for each ractor.
-class RactorParser
+class RactorFileParser
 
   attr_reader :dictionary_words, :name
 
@@ -20,9 +21,11 @@ class RactorParser
     @name = name
   end
 
-  def parse(filespecs)
-    filespecs.inject(Set.new) do |found_words, filespec|
-      found_words | process_one_file(filespec)
+  def parse(filespec)
+    # e.g.: ractor_9     casa/app/controllers/case_court_reports_controller.rb
+    printf("%-12s %s\n", name, filespec)
+    file_lines(filespec).each_with_object(Set.new) do |line, file_words|
+      line_words(line).each { |word| file_words << word }
     end
   end
 
@@ -36,18 +39,15 @@ class RactorParser
 
   private def file_lines(filespec)
     command = "strings #{Shellwords.escape(filespec)}"
-    text = `#{command}`
-    strip_punctuation(text).split("\n")
+    strip_punctuation(`#{command}`).split("\n")
   end
 
   private def line_words(line)
     line.split.map(&:downcase).select { |text| word?(text) }
   end
 
-  private def process_one_file(filespec)
-    file_lines(filespec).each_with_object(Set.new) do |line, file_words|
-      line_words(line).each { |word| file_words << word }
-    end
+  private def benchmark_to_string(bm)
+    "user: #{bm.utime.round(3)}, system: #{bm.stime.round(3)}, total: #{bm.total.round(3)}, real: #{bm.real.round(3)}"
   end
 end
 
@@ -56,32 +56,36 @@ class Main
 
   BASEDIR =  ARGV[0] || '.'
   FILEMASK = ARGV[1]
-  CPU_COUNT = Etc.nprocessors
 
   def call
     check_arg_count
-    slices = get_filespec_slices
-    ractors = create_and_populate_ractors(slices)
-    ractors.each { |ractor| ractor.send('start') }
+    ractors = create_and_populate_ractors
 
     all_words = nil
     benchmark = Benchmark.measure { all_words = collate_ractor_results(ractors) }
-    puts "Finished: #{benchmark_to_string(benchmark)}"
+    puts "\nFinished: #{benchmark_to_string(benchmark)}\n\n"
     write_results(all_words)
   end
 
+  private def ractor_count
+    unless @ractor_count
+      @ractor_count = ENV['RACTOR_COUNT'] ? ENV['RACTOR_COUNT'].to_i : Etc.nprocessors
+      raise "Ractor count must > 0." unless @ractor_count > 0
+    end
+    @ractor_count
+  end
 
   private def write_results(all_words)
-    yaml = all_words.to_a.sort.to_yaml
-    File.write('ractor-words.yaml', yaml)
-    puts "Words are in ractor-words.yaml."
+    File.write('ractor-words.txt', all_words.to_a.sort.join("\n"))
+    puts "Words are in ractor-words.txt, log files are in *.log."
   end
+
 
   private def benchmark_to_string(bm)
     "user: #{bm.utime.round(3)}, system: #{bm.stime.round(3)}, total: #{bm.total.round(3)}, real: #{bm.real.round(3)}"
   end
 
-  
+
   private def check_arg_count
     if ARGV.length > 2
       puts "Syntax is ractor [base_directory] [filemask], and filemask must be quoted so that the shell does not expand it."
@@ -97,38 +101,66 @@ class Main
   end
 
 
-  private def get_filespec_slices
-    all_filespecs = find_all_filespecs.shuffle
-    slice_size = (all_filespecs.size / CPU_COUNT) + 1
-    # slice_size = all_filespecs.size # use this line instead of previous to test with 1 ractor
-    slices = all_filespecs.each_slice(slice_size).to_a
-    puts "Processing #{all_filespecs.size} files in #{slices.size} slices, whose sizes are:\n#{slices.map(&:size).inspect}"
-    slices
-  end
-
-
-  private def create_and_populate_ractors(filespecs_slices)
-
-    create_ractor = ->(seq_no) do
-      Ractor.new(name: "ractor_#{seq_no}") do
-        filespecs = Ractor.receive
+  private def create_parser_ractor(seq_no)
+    Ractor.new(name: "ractor_#{seq_no}") do
+      File.open("#{name}.log", 'w') do |log|
+        found_words = Set.new
         dictionary_words = Ractor.receive
-        Ractor.receive # "start" message
+        yielder = Ractor.receive
+        parser = RactorFileParser.new(name, dictionary_words)
+
         start_time = Time.now
-        found_words = RactorParser.new(name, dictionary_words).parse(filespecs)
-        puts "Ractor #{name} duration (secs): #{Time.now - start_time}"
+        loop do
+          filespec = yielder.take
+
+          # e.g.:      0.00001   Received casa/app/models/followup.rb for processing.
+          log << "#{sprintf("%12.5f", (Time.now - start_time).round(5))}   Received #{filespec} for processing.\n"
+
+          if filespec.is_a?(Array)
+            puts "\n\n\n!!!!\nRactor received a message that contained the list of all filespecs, instead of a single filespec. This was not sent via the filespec yielder. Why? Skipping it...\n!!!!\n\n"
+            next
+          end
+          file_start_time = Time.now
+          found_words |= parser.parse(filespec)
+
+          # e.g.:    46.33613                                        +45.68088  Completed processing casa/app/documents/templates/report_template_non_transition.docx
+          log << sprintf("%12.5f%12s+%8.5f  %s\n", (Time.now - start_time).round(5), '', (Time.now - file_start_time).round(5), "Completed processing #{filespec}")
+        end
+
+        # e.g.: Ractor ractor_16    duration (secs): 18.76906
+        message = "Ractor #{sprintf("%-12s", name)} duration (secs): #{sprintf("%.5f", (Time.now - start_time).round(5))}\n"
+        log << message
+        puts message
+
         found_words
       end
     end
+  end
 
+
+  private def create_filespec_yielding_ractor(all_filespecs)
+    ractor = Ractor.new(name: 'FilespecYielder') do
+      File.open('filespec_yielder_ractor.log', 'w') do |log|
+        filespecs = Ractor.receive
+        filespecs.each do |filespec|
+          Ractor.yield(filespec)
+          log << filespec << "\n"
+        end
+      end
+    end
+    ractor.send(all_filespecs)
+    ractor
+  end
+
+
+  private def create_and_populate_ractors
+    puts "Creating #{ractor_count} ractor(s)."
+    filespec_yielder = create_filespec_yielding_ractor(find_all_filespecs)
     dictionary_words = File.readlines('/usr/share/dict/words').map(&:chomp).map(&:downcase).sort
-
-    seq_no = 0
-    filespecs_slices.map do |filespecs_slice|
-      ractor = create_ractor.(seq_no); seq_no += 1
-      ractor.send(filespecs_slice)
+    ractors = (0...ractor_count).map { |n| create_parser_ractor(n) }
+    ractors.each do |ractor|
       ractor.send(dictionary_words)
-      ractor
+      ractor.send(filespec_yielder)
     end
   end
 
@@ -137,7 +169,9 @@ class Main
     filemask = FILEMASK ? %Q{-name '#{FILEMASK}'} : ''
     command = "find -L #{BASEDIR} -type f #{filemask} -print"
     puts "Running the following command to find all filespecs to process: #{command}"
-    `#{command}`.split("\n")
+    filespecs = `#{command}`.split("\n").map(&:freeze)
+    puts "Found #{filespecs.size} files."
+    filespecs
   end
 end
 
