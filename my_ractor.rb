@@ -6,6 +6,7 @@ require 'etc'
 require 'prettyprint'
 require 'set'
 require 'shellwords'
+require 'json'
 require 'yaml'
 
 raise "This script requires Ruby version 3 or later." unless RUBY_VERSION.split('.').first.to_i >= 3
@@ -45,10 +46,6 @@ class RactorFileParser
   private def line_words(line)
     line.split.map(&:downcase).select { |text| word?(text) }
   end
-
-  private def benchmark_to_string(bm)
-    "user: #{bm.utime.round(3)}, system: #{bm.stime.round(3)}, total: #{bm.total.round(3)}, real: #{bm.real.round(3)}"
-  end
 end
 
 
@@ -60,12 +57,11 @@ class Main
   def call
     check_arg_count
     ractors = create_and_populate_ractors
-
     all_words = nil
     benchmark = Benchmark.measure { all_words = collate_ractor_results(ractors) }
-    puts "\nFinished: #{benchmark_to_string(benchmark)}\n\n"
-    write_results(all_words)
+    write_results(all_words, benchmark)
   end
+
 
   private def ractor_count
     unless @ractor_count
@@ -75,14 +71,16 @@ class Main
     @ractor_count
   end
 
-  private def write_results(all_words)
+
+  private def write_results(all_words, benchmark)
     File.write('ractor-words.txt', all_words.to_a.sort.join("\n"))
-    puts "Words are in ractor-words.txt, log files are in *.log."
-  end
-
-
-  private def benchmark_to_string(bm)
-    "user: #{bm.utime.round(3)}, system: #{bm.stime.round(3)}, total: #{bm.total.round(3)}, real: #{bm.real.round(3)}"
+    puts "\nFinished. Words are in ractor-words.txt, log files are *.log."
+    benchmark_hash = benchmark_to_hash(benchmark)
+    ap benchmark_hash
+    puts "\nJSON:"
+    puts benchmark_hash.to_json
+    puts "\nYAML:"
+    puts benchmark_hash.to_yaml
   end
 
 
@@ -108,29 +106,30 @@ class Main
         dictionary_words = Ractor.receive
         yielder = Ractor.receive
         parser = RactorFileParser.new(name, dictionary_words)
-
         start_time = Time.now
+
         loop do
           filespec = yielder.take
 
           # e.g.:      0.00001   Received casa/app/models/followup.rb for processing.
-          log << "#{sprintf("%12.5f", (Time.now - start_time).round(5))}   Received #{filespec} for processing.\n"
+          log.printf("%12.5f  Received %s for processing.\n", (Time.now - start_time).round(5), filespec)
 
           if filespec.is_a?(Array)
-            puts "\n\n\n!!!!\nRactor received a message that contained the list of all filespecs, instead of a single filespec. This was not sent via the filespec yielder. Why? Skipping it...\n!!!!\n\n"
+            puts "\n\n\n!!!!\nRactor received a message that contained the list of all filespecs, instead of a single filespec."
+            puts "This was not sent via the filespec yielder. Why? Skipping it...\n!!!!\n\n"
             next
           end
           file_start_time = Time.now
           found_words |= parser.parse(filespec)
 
           # e.g.:    46.33613                                        +45.68088  Completed processing casa/app/documents/templates/report_template_non_transition.docx
-          log << sprintf("%12.5f%12s+%8.5f  %s\n", (Time.now - start_time).round(5), '', (Time.now - file_start_time).round(5), "Completed processing #{filespec}")
+          log.printf("%12.5f%12s+%8.5f Completed processing %s\n", (Time.now - start_time).round(5), '', (Time.now - file_start_time).round(5), filespec)
         end
 
         # e.g.: Ractor ractor_16    duration (secs): 18.76906
-        message = "Ractor #{sprintf("%-12s", name)} duration (secs): #{sprintf("%.5f", (Time.now - start_time).round(5))}\n"
-        log << message
+        message = sprintf("Ractor %-12s duration (secs): %.5f", name, (Time.now - start_time).round(5))
         puts message
+        log.puts message
 
         found_words
       end
@@ -144,7 +143,7 @@ class Main
         filespecs = Ractor.receive
         filespecs.each do |filespec|
           Ractor.yield(filespec)
-          log << filespec << "\n"
+          log.puts filespec
         end
       end
     end
@@ -172,6 +171,16 @@ class Main
     filespecs = `#{command}`.split("\n").map(&:freeze)
     puts "Found #{filespecs.size} files."
     filespecs
+  end
+
+
+  private def benchmark_to_hash(bm)
+    {
+      user: bm.utime.round(3),
+      system: bm.stime.round(3),
+      total: bm.total.round(3),
+      real: bm.real.round(3)
+    }
   end
 end
 
