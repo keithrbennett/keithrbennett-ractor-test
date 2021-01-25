@@ -54,9 +54,7 @@ end
 # ==================================================================================================
 class FileProcessorRactorBody
 
-  def self.call
-    new.call
-  end
+  def self.call = new.call
 
   attr_reader :dictionary_words, :name, :found_words, :processor, :start_time, :yielder
 
@@ -91,7 +89,7 @@ class FileProcessorRactorBody
 
   private def filespec_valid?(filespec)
     valid = true
-    
+
     if filespec.is_a?(Array)
       puts "\n\n\n!!!!\nRactor received a message that contained the list of all filespecs, instead of a single filespec."
       puts "This was not sent via the filespec yielder. Why? Skipping it...\n!!!!\n\n"
@@ -113,6 +111,50 @@ class FileProcessorRactorBody
   end
 end
 
+
+# ==================================================================================================
+# This class defines the behavior of the processor ractor (i.e. provides the body for it)
+# ==================================================================================================
+class FilespecYieldingRactorBody
+
+  def self.call = new.call
+
+  attr_reader :filespecs, :file_count, :report_interval_secs, :time_to_report_progress
+
+  def call
+    setup_vars
+    puts # make some vertical whitespace to offset the ractor warning
+    report_progress(0)
+
+    filespecs.each_with_index do |filespec, file_num|
+      Ractor.yield(filespec)
+      report_progress(file_num)
+    end
+    go_to_start_of_terminal_line
+    puts "Finished sending filespecs to ractors. They may take a while to finish processing.\n\n"
+  end
+
+  private def go_to_start_of_terminal_line
+    print("\e[G")
+  end
+
+  private def setup_vars
+    @filespecs = Ractor.receive
+    @report_interval_secs = 1
+    @time_to_report_progress = Time.now - 100 # some time in the past
+    @file_count = filespecs.size
+  end
+
+  private def report_progress(file_num)
+    if Time.now > time_to_report_progress
+      percent_complete = (100.0 * file_num / file_count).round(2)
+      message = sprintf "%05.2f%% complete [%6d / %6d]", percent_complete, file_num, file_count
+      go_to_start_of_terminal_line
+      print message
+      @time_to_report_progress = Time.now + report_interval_secs
+    end
+  end
+end
 
 # ==================================================================================================
 # Main Entry Point of the Script (Main#call)
@@ -176,33 +218,7 @@ class Main
 
 
   private def create_filespec_yielding_ractor(all_filespecs)
-    ractor = Ractor.new(name: 'FilespecYielder') do
-      filespecs = Ractor.receive
-      report_interval_secs = 1
-      time_to_report_progress = Time.now - 100 # some time in the past
-      file_count = filespecs.size
-      puts # make some vertical whitespace to offset the ractor warning
-
-      report_progress = ->(file_num) do
-        if Time.now > time_to_report_progress
-          percent_complete = (100.0 * file_num / file_count).round(2)
-          message = sprintf "%05.2f%% complete [%6d / %6d]", percent_complete, file_num, file_count
-          print("\e[G") # go to beginning of line
-          print message
-          time_to_report_progress = Time.now + report_interval_secs
-        end
-      end
-
-      File.open('filespec_yielder_ractor.log', 'w') do |log|
-        report_progress.(0)
-        filespecs.each_with_index do |filespec, file_num|
-          Ractor.yield(filespec)
-          report_progress.(file_num)
-        end
-        puts "\nFinished sending filespecs to ractors. They may take a while to finish processing.\n\n"
-      end
-    end
-
+    ractor = Ractor.new(name: 'FilespecYielder') { FilespecYieldingRactorBody.call }
     ractor.send(all_filespecs)
     ractor
   end
