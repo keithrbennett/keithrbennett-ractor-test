@@ -11,9 +11,10 @@ require 'yaml'
 
 raise "This script requires Ruby version 3 or later." unless RUBY_VERSION.split('.').first.to_i >= 3
 
-
-# An instance of this parser class is created for each ractor.
-class RactorFileParser
+# ==================================================================================================
+# An instance of this file processor class is created for each ractor.
+# ==================================================================================================
+class RactorFileProcessor
 
   attr_reader :dictionary_words, :name
 
@@ -22,7 +23,7 @@ class RactorFileParser
     @name = name
   end
 
-  def parse(filespec)
+  def process_file(filespec)
     file_lines(filespec).each_with_object(Set.new) do |line, file_words|
       line_words(line).each { |word| file_words << word }
     end
@@ -48,6 +49,74 @@ class RactorFileParser
 end
 
 
+# ==================================================================================================
+# This class defines the behavior of the processor ractor (i.e. provides the body for it)
+# ==================================================================================================
+class FileProcessorRactorBody
+
+  def self.call
+    new.call
+  end
+
+  attr_reader :dictionary_words, :name, :found_words, :processor, :start_time, :yielder
+
+  def call
+    set_up_vars
+    File.open("#{name}.log", 'w') do |log|
+      loop do
+        filespec = yielder.take
+        next unless filespec_valid?(filespec)
+
+        # e.g.:      0.00001   Received casa/app/models/followup.rb for processing.
+        log.printf("%12.5f  Received %s for processing.\n", (Time.now - start_time).round(5), filespec)
+
+        file_start_time = Time.now
+        found_words |= processor.process_file(filespec)
+        log.printf("%12.5f%12s+%8.5f Completed processing %s\n", (Time.now - start_time).round(5), '', (Time.now - file_start_time).round(5), filespec)
+      end
+      report_completion(log)
+    end
+
+    found_words
+  end
+
+
+  private def report_completion(log)
+    # e.g.: Ractor ractor_16    duration (secs): 18.76906
+    message = sprintf("Ractor %-12s duration (secs): %.5f\n", name, (Time.now - start_time).round(5))
+    puts message
+    log.puts message
+  end
+
+
+  private def filespec_valid?(filespec)
+    valid = true
+    
+    if filespec.is_a?(Array)
+      puts "\n\n\n!!!!\nRactor received a message that contained the list of all filespecs, instead of a single filespec."
+      puts "This was not sent via the filespec yielder. Why? Skipping it...\n!!!!\n\n"
+      valid = false
+    end
+
+    valid = false if filespec.to_s == ''
+
+    valid
+  end
+
+  private def set_up_vars
+    @name = Ractor.receive
+    @dictionary_words = Ractor.receive
+    @yielder = Ractor.receive
+    @found_words = Set.new
+    @processor = RactorFileProcessor.new(name, dictionary_words)
+    @start_time = Time.now
+  end
+end
+
+
+# ==================================================================================================
+# Main Entry Point of the Script (Main#call)
+# ==================================================================================================
 class Main
 
   BASEDIR =  ARGV[0] || '.'
@@ -106,55 +175,6 @@ class Main
   end
 
 
-  private def create_parser_ractor(seq_no)
-    Ractor.new(name: "ractor_#{seq_no}") do
-
-      filespec_valid = ->(filespec) do
-        valid = true
-        if filespec.is_a?(Array)
-          puts "\n\n\n!!!!\nRactor received a message that contained the list of all filespecs, instead of a single filespec."
-          puts "This was not sent via the filespec yielder. Why? Skipping it...\n!!!!\n\n"
-          valid = false
-        end
-
-        valid = false if filespec.to_s == ''
-        valid
-      end
-
-      report_completion = ->(log, start_time) do
-        # e.g.: Ractor ractor_16    duration (secs): 18.76906
-        message = sprintf("Ractor %-12s duration (secs): %.5f\n", name, (Time.now - start_time).round(5))
-        puts message
-        log.puts message
-      end
-
-      # e.g.:    46.33613            +45.68088  Completed processing casa/app/documents/templates/report_template_non_transition.docx
-
-      File.open("#{name}.log", 'w') do |log|
-        found_words = Set.new
-        dictionary_words = Ractor.receive
-        yielder = Ractor.receive
-        parser = RactorFileParser.new(name, dictionary_words)
-        start_time = Time.now
-
-        loop do
-          filespec = yielder.take
-          next unless filespec_valid.(filespec)
-
-          # e.g.:      0.00001   Received casa/app/models/followup.rb for processing.
-          log.printf("%12.5f  Received %s for processing.\n", (Time.now - start_time).round(5), filespec)
-
-          file_start_time = Time.now
-          found_words |= parser.parse(filespec)
-          log.printf("%12.5f%12s+%8.5f Completed processing %s\n", (Time.now - start_time).round(5), '', (Time.now - file_start_time).round(5), filespec)
-        end
-        report_completion.(log, start_time)
-        found_words
-      end
-    end
-  end
-
-
   private def create_filespec_yielding_ractor(all_filespecs)
     ractor = Ractor.new(name: 'FilespecYielder') do
       filespecs = Ractor.receive
@@ -167,7 +187,7 @@ class Main
         if Time.now > time_to_report_progress
           percent_complete = (100.0 * file_num / file_count).round(2)
           message = sprintf "%05.2f%% complete [%6d / %6d]", percent_complete, file_num, file_count
-          print("\e[G")
+          print("\e[G") # go to beginning of line
           print message
           time_to_report_progress = Time.now + report_interval_secs
         end
@@ -191,8 +211,10 @@ class Main
   private def create_and_populate_ractors
     filespec_yielder = create_filespec_yielding_ractor(find_all_filespecs)
     dictionary_words = File.readlines('/usr/share/dict/words').map(&:chomp).map(&:downcase).sort
-    ractors = (0...ractor_count).map { |n| create_parser_ractor(n) }
-    ractors.each do |ractor|
+    (0...ractor_count).map do |index|
+      name = "ractor-#{index}"
+      ractor = Ractor.new(name: name) { FileProcessorRactorBody.call }
+      ractor.send(name)
       ractor.send(dictionary_words)
       ractor.send(filespec_yielder)
     end
@@ -218,5 +240,7 @@ class Main
     }
   end
 end
+
+# ==================================================================================================
 
 Main.new.call
