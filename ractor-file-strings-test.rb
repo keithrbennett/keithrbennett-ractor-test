@@ -12,7 +12,7 @@ require 'yaml'
 raise "This script requires Ruby version 3 or later." unless RUBY_VERSION.split('.').first.to_i >= 3
 
 # ==================================================================================================
-# An instance of this file processor class is created for each ractor.
+# An instance of this file processor class is created for each file-processing ractor.
 # ==================================================================================================
 class RactorFileProcessor
 
@@ -38,7 +38,6 @@ class RactorFileProcessor
   end
 
   private def file_lines(filespec)
-    return if filespec.empty?
     command = "strings #{Shellwords.escape(filespec)}"
     strip_punctuation(`#{command}`).split("\n")
   end
@@ -50,7 +49,7 @@ end
 
 
 # ==================================================================================================
-# This class defines the behavior of the processor ractor (i.e. provides the body for it)
+# This class defines the behavior of the processor ractor (i.e. provides the body for its `new` block)
 # ==================================================================================================
 class FileProcessorRactorBody
 
@@ -69,7 +68,7 @@ class FileProcessorRactorBody
         log.printf("%12.5f  Received %s for processing.\n", (Time.now - start_time).round(5), filespec)
 
         file_start_time = Time.now
-        found_words |= processor.process_file(filespec)
+        found_words.merge(processor.process_file(filespec))
         log.printf("%12.5f%12s+%8.5f Completed processing %s\n", (Time.now - start_time).round(5), '', (Time.now - file_start_time).round(5), filespec)
       end
       report_completion(log)
@@ -88,18 +87,9 @@ class FileProcessorRactorBody
 
 
   private def filespec_valid?(filespec)
-    valid = true
-
-    if filespec.is_a?(Array)
-      puts "\n\n\n!!!!\nRactor received a message that contained the list of all filespecs, instead of a single filespec."
-      puts "This was not sent via the filespec yielder. Why? Skipping it...\n!!!!\n\n"
-      valid = false
-    end
-
-    valid = false if filespec.to_s == ''
-
-    valid
+    filespec.is_a?(String) && filespec.length > 0
   end
+
 
   private def set_up_vars
     @name = Ractor.receive
@@ -112,9 +102,9 @@ class FileProcessorRactorBody
 end
 
 
-# ==================================================================================================
-# This class defines the behavior of the processor ractor (i.e. provides the body for it)
-# ==================================================================================================
+# ====================================================================================================
+# This class defines the behavior of the processor ractor (i.e. provides the body for its `new` block)
+# ====================================================================================================
 class FilespecYieldingRactorBody
 
   def self.call = new.call
@@ -148,7 +138,7 @@ class FilespecYieldingRactorBody
   private def report_progress(file_num)
     if Time.now > time_to_report_progress
       percent_complete = (100.0 * file_num / file_count).round(2)
-      message = sprintf "%05.2f%% complete [%6d / %6d]", percent_complete, file_num, file_count
+      message = sprintf("%05.2f%% complete [%6d / %6d]", percent_complete, file_num, file_count)
       go_to_start_of_terminal_line
       print message
       @time_to_report_progress = Time.now + report_interval_secs
