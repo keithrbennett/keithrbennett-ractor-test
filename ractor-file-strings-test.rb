@@ -1,5 +1,17 @@
 #!/usr/bin/env ruby
 
+# Tests performance of processing a CPU load with a variable number of ractors.
+#
+# The number of ractors used will default to the number of CPU's found on the host.
+# This can be overridden with the RACTOR_COUNT environment variable, e.g.:
+#
+# RACTOR_COUNT=1 ractor-file-strings-test.rb
+#
+# It uses the Unix `find` command
+# A filemask can be This script will take all files matching a file mask (default: all files in current directory and below).
+#
+
+
 require 'amazing_print'
 require 'benchmark'
 require 'etc'
