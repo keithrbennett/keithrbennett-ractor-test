@@ -15,6 +15,7 @@
 require 'amazing_print'
 require 'benchmark'
 require 'etc'
+require 'ostruct'
 require 'prettyprint'
 require 'set'
 require 'shellwords'
@@ -71,30 +72,15 @@ class FileProcessorRactorBody
 
   def call
     set_up_vars
-    File.open("#{name}.log", 'w') do |log|
-      loop do
-        filespec = yielder.take
-        next unless filespec_valid?(filespec)
 
-        # e.g.:      0.00001   Received casa/app/models/followup.rb for processing.
-        log.printf("%12.5f  Received %s for processing.\n", (Time.now - start_time).round(5), filespec)
-
-        file_start_time = Time.now
-        found_words.merge(processor.process_file(filespec))
-        log.printf("%12.5f%12s+%8.5f Completed processing %s\n", (Time.now - start_time).round(5), '', (Time.now - file_start_time).round(5), filespec)
-      end
-      report_completion(log)
+    loop do
+      filespec = yielder.take
+      next unless filespec_valid?(filespec)
+      found_words.merge(processor.process_file(filespec))
     end
 
+    printf("Ractor %-12s duration (secs): %.5f\n", name, (Time.now - start_time).round(5))
     found_words
-  end
-
-
-  private def report_completion(log)
-    # e.g.: Ractor ractor_16    duration (secs): 18.76906
-    message = sprintf("Ractor %-12s duration (secs): %.5f\n", name, (Time.now - start_time).round(5))
-    puts message
-    log.puts message
   end
 
 
@@ -158,57 +144,41 @@ class FilespecYieldingRactorBody
   end
 end
 
+
 # ==================================================================================================
-# Main Entry Point of the Script (Main#call)
+# Run the test with the specified number of ractors.
 # ==================================================================================================
-class Main
+class TestRun
 
-  BASEDIR =  ARGV[0] || '.'
-  FILEMASK = ARGV[1]
+  def self.call(all_filespecs, ractor_count) = self.new(all_filespecs, ractor_count).call
 
-  attr_reader :ractor_count
+  attr_reader :all_filespecs, :ractor_count
 
-  def call
-    check_arg_count
-    init_ractor_count
-    ractor_count # pre-fill
-    ractors = create_and_populate_ractors
-    all_words = nil
-    benchmark = Benchmark.measure { all_words = collate_ractor_results(ractors) }
-    write_results(all_words, benchmark)
+  def initialize(all_filespecs, ractor_count)
+    @all_filespecs = all_filespecs
+    @ractor_count = ractor_count
   end
 
-
-  private def init_ractor_count
-    specified_as_env_var = !!ENV['RACTOR_COUNT']
-    @ractor_count = specified_as_env_var ? ENV['RACTOR_COUNT'].to_i : Etc.nprocessors
-
-    raise "Ractor count must > 0." unless @ractor_count > 0
-
-    unless specified_as_env_var
-      puts "Using the number of CPU's (#{@ractor_count}) as the number of ractors.\n" \
-           + "You can also optionally specify the number of ractors to use with the environment variable RACTOR_COUNT."
-    end
+  def call
+    puts "\n\n#{'-' * 100}\nUsing #{ractor_count} ractor(s):"
+    ractors = create_and_populate_ractors
+    all_words = nil
+    benchmark = benchmark_to_hash(Benchmark.measure { all_words = collate_ractor_results(ractors) })
+    write_results(all_words, benchmark)
+    benchmark
   end
 
 
   private def write_results(all_words, benchmark)
-    File.write('ractor-words.txt', all_words.to_a.sort.join("\n"))
-    puts "\nFinished. Words are in ractor-words.txt, log files are *.log."
-    benchmark_hash = benchmark_to_hash(benchmark)
-    ap benchmark_hash
+    words_filespec = "ractor-words-#{ractor_count}.txt"
+    File.write(words_filespec, all_words.to_a.sort.join("\n"))
+    puts "\nFinished. Words are in #{words_filespec}, log files are *.log."
+    puts "Using #{ractor_count} ractor(s):"
+    ap benchmark
     puts "\nJSON:"
-    puts benchmark_hash.to_json
+    puts benchmark.to_json
     puts "\nYAML:"
-    puts benchmark_hash.to_yaml
-  end
-
-
-  private def check_arg_count
-    if ARGV.length > 2
-      puts "Syntax is ractor [base_directory] [filemask], and filemask must be quoted so that the shell does not expand it."
-      exit -1
-    end
+    puts benchmark.to_yaml
   end
 
 
@@ -219,7 +189,7 @@ class Main
   end
 
 
-  private def create_filespec_yielding_ractor(all_filespecs)
+  private def create_filespec_yielding_ractor
     ractor = Ractor.new(name: 'FilespecYielder') { FilespecYieldingRactorBody.call }
     ractor.send(all_filespecs)
     ractor
@@ -227,7 +197,7 @@ class Main
 
 
   private def create_and_populate_ractors
-    filespec_yielder = create_filespec_yielding_ractor(find_all_filespecs)
+    filespec_yielder = create_filespec_yielding_ractor
     dictionary_words = File.readlines('/usr/share/dict/words').map(&:chomp).map(&:downcase).sort
     (0...ractor_count).map do |index|
       name = "ractor-#{index}"
@@ -235,6 +205,72 @@ class Main
       ractor.send(name)
       ractor.send(dictionary_words)
       ractor.send(filespec_yielder)
+    end
+  end
+
+
+  private def benchmark_to_hash(bm)
+    {
+      user: bm.utime.round(3),
+      system: bm.stime.round(3),
+      total: bm.total.round(3),
+      real: bm.real.round(3)
+    }
+  end
+end
+
+
+# ==================================================================================================
+# Main Entry Point of the Script (Main#call)
+# ==================================================================================================
+class Main
+
+  BASEDIR =  ARGV[0] || '.'
+  FILEMASK = ARGV[1]
+
+  def call
+    Ractor.new {}
+    check_arg_count
+    all_filespecs = find_all_filespecs
+
+    do_1_cpu_first = [true, false].sample
+    if do_1_cpu_first
+      benchmark_1_cpu = TestRun.call(all_filespecs, 1)
+      benchmark_all_cpus = TestRun.call(all_filespecs, processor_count)
+    else
+      benchmark_all_cpus = TestRun.call(all_filespecs, processor_count)
+      benchmark_1_cpu = TestRun.call(all_filespecs, 1)
+    end
+
+    write_summary_results(benchmark_1_cpu, benchmark_all_cpus)
+  end
+
+
+  private def write_summary_results(benchmark_1, benchmark_all)
+    b1 = OpenStruct.new(benchmark_1)
+    bn = OpenStruct.new(benchmark_all)
+    headings = ["", "1 CPU", "#{processor_count} CPU's", "Factor"]
+    format_string = "%-12.12s %16.5f %16.5f %16.5f\n"
+    headings_format_string = "%12s %16s %16s %16s\n"
+
+    puts "\n\n#{'=' * 100}\nSummary Results:\n#{'=' * 100}\n\n"
+    printf(headings_format_string, *headings)
+    puts('-' * 64)
+    printf(format_string, 'User',   b1.user,   bn.user,   bn.user   / b1.user)
+    printf(format_string, 'System', b1.system, bn.system, bn.system / b1.user)
+    printf(format_string, 'Total',  b1.total,  bn.total,  bn.total  / b1.total)
+    printf(format_string, 'Real',   b1.real,   bn.real,   bn.real   / b1.real)
+  end
+
+
+  private def processor_count
+    Etc.nprocessors
+  end
+
+  private def check_arg_count
+    if ARGV.length > 2
+      puts "Syntax is ractor [base_directory] [filemask], and filemask must be quoted so that the shell does not expand it."
+      exit -1
     end
   end
 
@@ -249,13 +285,16 @@ class Main
   end
 
 
-  private def benchmark_to_hash(bm)
-    {
-      user: bm.utime.round(3),
-      system: bm.stime.round(3),
-      total: bm.total.round(3),
-      real: bm.real.round(3)
-    }
+  private def init_ractor_count
+    specified_as_env_var = !!ENV['RACTOR_COUNT']
+    @ractor_count = specified_as_env_var ? ENV['RACTOR_COUNT'].to_i : Etc.nprocessors
+
+    raise "Ractor count must > 0." unless @ractor_count > 0
+
+    unless specified_as_env_var
+      puts "Using the number of CPU's (#{@ractor_count}) as the number of ractors.\n" \
+         + "You can also optionally specify the number of ractors to use with the environment variable RACTOR_COUNT."
+    end
   end
 end
 
