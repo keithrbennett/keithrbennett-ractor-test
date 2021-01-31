@@ -1,16 +1,28 @@
 #!/usr/bin/env ruby
 
-# Tests performance of processing a CPU load with a variable number of ractors.
+# Benchmarks performance of processing a CPU load with one ractor and multiple ractors, and compares the results.
 #
-# The number of ractors used will default to the number of CPU's found on the host.
-# This can be overridden with the RACTOR_COUNT environment variable, e.g.:
+# Two measurements will be done; one with 1 ractor, and the other with the number of ractors set to the number of CPU's.
+# The order of the two tests is randomized.
 #
-# RACTOR_COUNT=1 ractor-file-strings-test.rb
+# Input consists of files on the filesystem. By default, all files in the current directory and below will be processed.
 #
-# It uses the Unix `find` command
-# A filemask can be This script will take all files matching a file mask (default: all files in current directory and below).
+# This can be overridden:
 #
-
+# ARGV[0] - base directory from which to navigate downward, inclusive of the base directory
+# ARGV[1] - file mask for use as parameter to Unix `find` command's `name` parameter
+#
+# For each file meeting the filter criteria, the Unix `strings` command is run to find that file's character sequences resembling strings.
+# Then a set of "words" is created containing only those strings that are found in the system's `words` dictionary.
+# That set is then merged into the ractor's all-file-scope set of words.
+#
+# When all ractors are finished, each ractor's set of words is merged into a global one, and the result saved to a file
+# whose name will include the number of ractors used, e.g. `ractor-words-1.txt` and `ractor-words-24.txt`.
+# A difference between those files (not likely) indicates an error in the run that is probably not related to ractors.
+#
+# The test has no real use other than exercising the CPU's, and performance improvements have deliberately not been pursued.
+#
+# The `amazing_print` gem is used to nicely output some information, and needs to be `gem install`ed.
 
 require 'amazing_print'
 require 'benchmark'
