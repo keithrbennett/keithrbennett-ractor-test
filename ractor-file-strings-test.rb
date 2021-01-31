@@ -22,7 +22,8 @@ require 'shellwords'
 require 'json'
 require 'yaml'
 
-raise "This script requires Ruby version 3 or later." unless RUBY_VERSION.split('.').first.to_i >= 3
+
+Warning[:experimental] = false if defined? Warning[]  # disable ractor experimental warning
 
 # ==================================================================================================
 # An instance of this file processor class is created for each file-processing ractor.
@@ -66,7 +67,7 @@ end
 # ==================================================================================================
 class FileProcessorRactorBody
 
-  def self.call = new.call
+  def self.call; new.call; end
 
   attr_reader :dictionary_words, :name, :found_words, :processor, :start_time, :yielder
 
@@ -105,7 +106,7 @@ end
 # ====================================================================================================
 class FilespecYieldingRactorBody
 
-  def self.call = new.call
+  def self.call; new.call; end
 
   attr_reader :filespecs, :file_count, :report_interval_secs, :time_to_report_progress
 
@@ -150,7 +151,7 @@ end
 # ==================================================================================================
 class TestRun
 
-  def self.call(all_filespecs, ractor_count) = self.new(all_filespecs, ractor_count).call
+  def self.call(all_filespecs, ractor_count); self.new(all_filespecs, ractor_count).call; end
 
   attr_reader :all_filespecs, :ractor_count
 
@@ -225,10 +226,8 @@ end
 # ==================================================================================================
 class Main
 
-  BASEDIR =  ARGV[0] || '.'
-  FILEMASK = ARGV[1]
-
   def call
+    check_for_ruby_3
     Ractor.new {}
     check_arg_count
     all_filespecs = find_all_filespecs
@@ -276,8 +275,9 @@ class Main
 
 
   private def find_all_filespecs
-    filemask = FILEMASK ? %Q{-name '#{FILEMASK}'} : ''
-    command = "find -L #{BASEDIR} -type f #{filemask} -print"
+    file_mask = ARGV[1] ? %Q{-name '#{ARGV[1]}'} : ''
+    base_dir = ARGV[0] || '.'
+    command = "find -L #{base_dir} -type f #{file_mask} -print"
     puts "Running the following command to find all filespecs to process: #{command}"
     filespecs = `#{command}`.split("\n").map(&:freeze)
     puts "Found #{filespecs.size} files."
@@ -296,6 +296,14 @@ class Main
          + "You can also optionally specify the number of ractors to use with the environment variable RACTOR_COUNT."
     end
   end
+
+  private def check_for_ruby_3
+    unless RUBY_VERSION.split('.').first.to_i >= 3
+      puts "This script requires Ruby version 3 or later."
+      exit -1
+    end
+  end
+
 end
 
 # ==================================================================================================
