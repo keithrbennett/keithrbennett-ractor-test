@@ -260,17 +260,17 @@ class Main
   private def write_summary_results(benchmark_1, benchmark_all)
     b1 = OpenStruct.new(benchmark_1)
     bn = OpenStruct.new(benchmark_all)
-    headings = ["", "1 CPU", "#{processor_count} CPU's", "Factor"]
-    format_string = "%-12.12s %16.5f %16.5f %16.5f\n"
-    headings_format_string = "%12s %16s %16s %16s\n"
+    headings = ["", "1 CPU", "#{processor_count} CPU's", "Factor", "1 / Factor"]
+    format_string = "%-12.12s %16.5f %16.5f %16.5f %16.5f\n"
+    headings_format_string = "%12s %16s %16s %16s %16s\n"
 
     puts "\n\n#{'=' * 100}\nSummary Results:\n#{'=' * 100}\n\n"
     printf(headings_format_string, *headings)
-    puts('-' * 64)
-    printf(format_string, 'User',   b1.user,   bn.user,   bn.user   / b1.user)
-    printf(format_string, 'System', b1.system, bn.system, bn.system / b1.user)
-    printf(format_string, 'Total',  b1.total,  bn.total,  bn.total  / b1.total)
-    printf(format_string, 'Real',   b1.real,   bn.real,   bn.real   / b1.real)
+    puts('-' * 80)
+    printf(format_string, 'User',   b1.user,   bn.user,   bn.user   / b1.user,   b1.user   / bn.user)
+    printf(format_string, 'System', b1.system, bn.system, bn.system / b1.system, b1.system / bn.system)
+    printf(format_string, 'Total',  b1.total,  bn.total,  bn.total  / b1.total,  b1.total  / bn.total)
+    printf(format_string, 'Real',   b1.real,   bn.real,   bn.real   / b1.real,   b1.real   / bn.real)
   end
 
 
